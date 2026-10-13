@@ -1,0 +1,15 @@
+requests
+beautifulsoup4
+httpx
+ddgs
+ttkbootstrap
+selenium
+webdriver-manager
+duckduckgo-search
+Pillow
+openpyxl
+google-generativeai
+flask
+schedule
+plyer
+pytest
