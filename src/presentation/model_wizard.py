@@ -1,3 +1,5 @@
+import queue
+import threading
 import tkinter as tk
 from tkinter import filedialog
 
@@ -6,6 +8,7 @@ try:
 except ImportError:
     from tkinter import ttk
 
+from src.application.packages import install_button_label, packages_for
 from src.application.wizard import BACKEND_HELP, default_endpoint, fields_for, run_wizard_test
 from src.domain.inference import BACKENDS, ModelConfig
 from src.infrastructure.inference_factory import build_backend
@@ -19,12 +22,16 @@ def _mark(widget, testid: str):
 class ModelWizard(tk.Toplevel):
     """Three-step setup. A download waits until Confirm, then Test."""
 
-    def __init__(self, master):
+    def __init__(self, master, on_saved=None, store_path=None):
         super().__init__(master)
         self.title("Model setup")
         self.geometry("680x640")
         self.minsize(560, 520)
+        self._on_saved = on_saved
+        self._store_path = store_path
         self.confirmed = False
+        self._installing = False
+        self._install_notes = queue.Queue()
         self.step = 1
         self.backend_var = tk.StringVar(value=BACKENDS[0])
         self.model_id_var = tk.StringVar()
@@ -71,15 +78,23 @@ class ModelWizard(tk.Toplevel):
         self.confirm_btn = ttk.Button(self.actions, text="Confirm", command=self._confirm)
         self.confirm_btn.pack(side="left")
         _mark(ttk.Button(self.actions, text="Test", command=self._test), "wizard-test").pack(side="left", padx=8)
+        self.install_btn = _mark(ttk.Button(self.actions, text="", command=self._install), "wizard-install")
+        self.install_btn.pack(side="right")
 
         self.result = _mark(ttk.Label(frame, text="Not tested.", wraplength=620, justify="left"), "wizard-result")
         self.result.pack(anchor="w", fill="x")
         self._on_backend()
         self._show_step()
+        self.after(50, self._poll_install)
 
     def _on_backend(self, apply_preset=False):
         backend = self.backend_var.get().strip()
         self.help_label.configure(text=BACKEND_HELP.get(backend, "Choose a backend."))
+        self.install_btn.configure(text=install_button_label(backend))
+        if self._installing or not packages_for(backend):
+            self.install_btn.configure(state="disabled")
+        else:
+            self.install_btn.configure(state="normal")
         preset = default_endpoint(backend)
         if apply_preset and preset:
             self.endpoint_var.set(preset)
@@ -140,12 +155,53 @@ class ModelWizard(tk.Toplevel):
             confirmed=self.confirmed,
         )
 
+    def _persist(self):
+        config = self._config()
+        if self._store_path:
+            from src.infrastructure.model_store import save_model_config
+            save_model_config(config, self._store_path)
+        if self._on_saved:
+            self._on_saved(config)
+
     def _confirm(self):
         self.confirmed = True
-        self.result.configure(text="Confirmed. Test a Hugging Face or weights choice to download. Other choices stay on this Mac.")
+        self._persist()
+        self.result.configure(text="Confirmed. Test now, or open AI chat and ask about the results. A Hugging Face download waits until a local generator is installed.")
 
     def _test(self):
         if self.step < 3:
             self.step = 3
             self._show_step()
+        if self.confirmed:
+            self._persist()
         self.result.configure(text=run_wizard_test(build_backend(self._config())))
+
+    def _install(self):
+        if self._installing:
+            return
+        packages = packages_for(self.backend_var.get().strip())
+        if not packages:
+            self.result.configure(text="Ollama and a llama.cpp server are separate apps. There is no Python library to install.")
+            return
+        self._installing = True
+        self.install_btn.configure(state="disabled")
+        self.result.configure(text=f"Installing {' + '.join(packages)}. This can take a few minutes.")
+
+        def work():
+            from src.infrastructure.pip_install import install_packages
+            self._install_notes.put(install_packages(packages))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _poll_install(self):
+        if not self.winfo_exists():
+            return
+        try:
+            while True:
+                ok, message = self._install_notes.get_nowait()
+                self._installing = False
+                self.result.configure(text=message)
+                self._on_backend()
+        except queue.Empty:
+            pass
+        self.after(50, self._poll_install)

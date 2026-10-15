@@ -20,7 +20,7 @@ def test_dorks_and_apply_dork_stay_put():
 
 def test_start_sh_bytes_stay_put():
     digest = hashlib.sha256((ROOT / "start.sh").read_bytes()).hexdigest()
-    assert digest == "31b6cd1a6a952aecce53c3b5292e61fed20618f1f46fc09fcb808968c24b431a"
+    assert digest == "c3b0c7abe1ed36054b78c9965b6b541e5db1b40898391320a32af0730ec2544d"
 
 
 def test_entities_round_trip_uses_the_current_truthy_rule(tmp_path):

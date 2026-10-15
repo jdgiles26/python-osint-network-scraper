@@ -26,8 +26,7 @@ fi
 echo "Activating virtual environment..."
 source "$VENV_DIR/bin/activate"
 
-# Default Gemini key (can override by exporting GEMINI_API_KEY before running)
-export GEMINI_API_KEY="${GEMINI_API_KEY:-AIzaSyA1LgNILlkH5eTReXTOQ4bBX4c-EUJ3Oto}"
+# Gemini is optional. Export GEMINI_API_KEY in your own shell. Do not put a key in this file.
 
 echo "Upgrading pip and installing dependencies from requirements.txt..."
 python3 -m pip install --upgrade pip

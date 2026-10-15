@@ -1,7 +1,7 @@
 PROMPT = "Summarize this graph in one sentence."
 
 BACKEND_HELP = {
-    "huggingface": "Download a model from Hugging Face after you confirm. Use an id such as org/model-name.",
+    "huggingface": "Use a Hugging Face model after you confirm. The id looks like org/model-name. Weights download only when a local generator is installed.",
     "llama_cpp": "Run a .gguf file on this Mac with llama.cpp. Pick the file in the next step.",
     "mlx": "Run a model with Apple MLX. Pick a folder or type a model id.",
     "onnx": "Load an .onnx file you already have. Nothing is downloaded.",

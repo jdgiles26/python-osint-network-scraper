@@ -84,8 +84,7 @@ def normalize_phone(raw_phone: str):
     Ten-digit US numbers gain +1. Digit strings shorter than 10 or longer than
     15 are rejected. A bare digit string is kept only when it is 10 digits or
     an 11-digit NANP number already prefixed with 1. That second gate drops
-    database ids such as the 13-digit FindAGrave memorial 1173320481173, which
-    still sits inside the 10-15 window.
+    12- to 15-digit database ids, which still sit inside the 10-15 window.
     """
     if raw_phone is None:
         return None

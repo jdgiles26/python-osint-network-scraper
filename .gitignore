@@ -218,3 +218,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local machine metadata, scrape history, and runtime model choice
+.DS_Store
+scraper_data.db
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+model_config.json

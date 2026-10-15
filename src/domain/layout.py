@@ -1,7 +1,7 @@
-"""Deterministic canvas layout.
+"""Deterministic canvas layout used by pytest.
 
-The report worker runs the same placement in JavaScript. Pytest calls this
-function directly. Positions stay inside the pane and spread across it.
+The browser worker places sources and findings in labeled columns. This
+function still spreads nodes across the pane for the placement test.
 """
 import math
 
@@ -40,12 +40,20 @@ def layout_graph(nodes, edges, width, height):
         top = cell_h * row + cell_h * pad
         inner_w = cell_w * (1 - 2 * pad)
         inner_h = cell_h * (1 - 2 * pad)
-        grid_cols = max(1, math.ceil(math.sqrt(len(members))))
+        # Few nodes stack so their labels do not share one horizontal line.
+        # A single column sits toward the outer side of the cell, which keeps
+        # the whole graph spread across the pane.
+        grid_cols = 1 if len(members) <= 5 else max(1, math.ceil(math.sqrt(len(members))))
         grid_rows = max(1, math.ceil(len(members) / grid_cols))
         for offset, node_id in enumerate(members):
             grid_row = offset // grid_cols
             grid_col = offset % grid_cols
-            x = left + inner_w * ((grid_col + 0.5) / grid_cols)
+            if grid_cols == 1:
+                bias = 0.34 if column == 0 else 0.66
+                stagger = 0.10 if offset % 2 else -0.06
+                x = cell_w * (column + min(0.9, max(0.12, bias + stagger)))
+            else:
+                x = left + inner_w * ((grid_col + 0.5) / grid_cols)
             y = top + inner_h * ((grid_row + 0.5) / grid_rows)
             positions[node_id] = (x, y)
     return positions

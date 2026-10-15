@@ -743,6 +743,11 @@ class ScraperGUI(ttk.Frame):
         self.current_session_id = None
         self._seen_items = set()
         self._all_results_cache = []
+        self._model_config = None
+        self._model_config_path = os.path.join(os.getcwd(), "model_config.json")
+        self._installing_libraries = False
+        self._install_notes = queue.Queue()
+        self._load_saved_model()
         self.pages_crawled = 0
         self.queue_size = 0
         self.run_started_at = None
@@ -831,6 +836,9 @@ class ScraperGUI(ttk.Frame):
         ttk.Button(export_frame, text="JSON", command=self.export_json, bootstyle="primary-outline").pack(side=LEFT, padx=2)
         ttk.Button(export_frame, text="Relationship report", command=self.export_report, bootstyle="success").pack(side=LEFT, padx=2)
         ttk.Button(export_frame, text="Model setup", command=self.open_model_wizard, bootstyle="warning-outline").pack(side=LEFT, padx=2)
+        ttk.Button(export_frame, text="AI chat", command=self.open_ai_chat, bootstyle="warning").pack(side=LEFT, padx=2)
+        self.install_btn = ttk.Button(export_frame, text=self._library_button_text(), command=self.install_model_libraries, bootstyle="info")
+        self.install_btn.pack(side=LEFT, padx=2)
         
         filter_frame = ttk.Frame(results_ui_frame); filter_frame.pack(fill=X, pady=5)
         self.filter_var = ttk.StringVar(); self.filter_var.trace_add("write", self._filter_results_ui)
@@ -921,6 +929,7 @@ class ScraperGUI(ttk.Frame):
         self.shopping_view.pack_forget()
         self.osint_view.pack_forget()
         self.custom_view.pack_forget()
+        self.watchdog_view.pack_forget()
         
         if mode == "shopping":
             self.shopping_view.pack(fill=BOTH, expand=YES)
@@ -999,6 +1008,7 @@ class ScraperGUI(ttk.Frame):
         self._render_results()
 
     def _process_queues(self):
+        self._drain_install_notes()
         # Process logs
         new_data = False
         while not self.log_queue.empty():
@@ -1150,12 +1160,163 @@ class ScraperGUI(ttk.Frame):
         except Exception as e:
             messagebox.showerror("Export Failed", f"Could not export JSON:\n{e}")
 
-    def open_model_wizard(self):
+    def _project_root(self):
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         if root not in sys.path:
             sys.path.insert(0, root)
+        return root
+
+    def _load_saved_model(self):
+        try:
+            self._project_root()
+            from src.infrastructure.model_store import load_model_config
+            self._model_config = load_model_config(self._model_config_path)
+        except Exception:
+            self._model_config = None
+
+    def _remember_model(self, config):
+        self._model_config = config
+        self.install_btn.configure(text=self._library_button_text())
+
+    def _library_button_text(self):
+        self._project_root()
+        from src.application.packages import install_button_label, packages_for
+        backend = "huggingface"
+        if self._model_config is not None and (self._model_config.backend or "").strip():
+            backend = self._model_config.backend.strip()
+        if not packages_for(backend):
+            return "Install libraries"
+        return install_button_label(backend)
+
+    def install_model_libraries(self):
+        """Pip-install the libraries for the saved backend. Hugging Face is the default."""
+        self._project_root()
+        from src.application.packages import NO_LIBRARY, packages_for
+        backend = "huggingface"
+        if self._model_config is not None and (self._model_config.backend or "").strip():
+            backend = self._model_config.backend.strip()
+        packages = packages_for(backend)
+        if not packages:
+            self.log_queue.put(f"INFO: {NO_LIBRARY}")
+            return NO_LIBRARY
+        if self._installing_libraries:
+            return "An install is already running."
+        self._installing_libraries = True
+        self.install_btn.configure(state=DISABLED)
+        label = " + ".join(packages)
+        self.log_queue.put(f"INFO: Installing {label}. This can take a few minutes.")
+
+        def work():
+            from src.infrastructure.pip_install import install_packages
+            self._install_notes.put(install_packages(packages))
+
+        threading.Thread(target=work, daemon=True).start()
+        return f"Installing {label}. This can take a few minutes."
+
+    def _drain_install_notes(self):
+        try:
+            while True:
+                ok, message = self._install_notes.get_nowait()
+                self._installing_libraries = False
+                self.install_btn.configure(state=NORMAL)
+                self.log_text.config(state=NORMAL)
+                self.log_text.insert(END, ("INFO: " if ok else "ERROR: ") + message + "\n")
+                self.log_text.see(END)
+                self.log_text.config(state=DISABLED)
+                if ok:
+                    messagebox.showinfo("Libraries", message)
+                else:
+                    messagebox.showerror("Libraries", message)
+        except queue.Empty:
+            pass
+
+    def open_model_wizard(self):
+        self._project_root()
         from src.presentation.model_wizard import ModelWizard
-        ModelWizard(self.master)
+        ModelWizard(self.master, on_saved=self._remember_model, store_path=self._model_config_path)
+
+    def open_ai_chat(self):
+        self._project_root()
+        from src.application.chat import ask_about_results, backend_label, local_complete, opening_reply, records_from_rows, sessions_from_history
+        from src.domain.inference import InferenceResult
+        from src.infrastructure.inference_factory import build_backend
+        from src.presentation.chat_window import ChatWindow
+
+        present, past, saved = self._chat_materials(records_from_rows, sessions_from_history)
+        gemini_ready = bool(os.getenv("GEMINI_API_KEY") or self.api_key_entry.get().strip())
+        snapshot = {"rows": (present, past, saved)}
+
+        def complete(prompt):
+            return local_complete(self._model_config, prompt, build_backend)
+
+        def fallback(prompt):
+            text, err = ai_helper.generate_text(prompt, self.api_key_entry.get())
+            if text:
+                return InferenceResult(True, text, "")
+            return InferenceResult(False, "", err or "Gemini did not answer.")
+
+        def before_ask():
+            snapshot["rows"] = self._chat_materials(records_from_rows, sessions_from_history)
+
+        def ask(question, history):
+            live_present, live_past, live_saved = snapshot["rows"]
+            return ask_about_results(question, live_present, live_past, live_saved, history, complete, fallback)
+
+        ChatWindow(
+            self.master,
+            ask=ask,
+            run_action=self._apply_chat_action,
+            opening=opening_reply(present, past, saved),
+            backend_label=backend_label(self._model_config, gemini_ready),
+            before_ask=before_ask,
+            install_libraries=self.install_model_libraries,
+        )
+
+    def _chat_materials(self, records_from_rows, sessions_from_history):
+        present = records_from_rows(list(self._all_results_cache))
+        try:
+            history_rows = self.db.get_history() or []
+        except Exception:
+            history_rows = []
+        past = sessions_from_history(history_rows[:8])
+        saved = []
+        for row in history_rows[:2]:
+            try:
+                saved.extend(self.db.get_results_for_session(row[0])[:4])
+            except Exception:
+                continue
+        return present, past, records_from_rows(saved)
+
+    def _apply_chat_action(self, action):
+        self._project_root()
+        from src.application.chat import plan_action
+        plan = plan_action(action)
+        if not plan.ok:
+            return plan.message
+        if plan.mode in {"osint", "custom"} and self.is_running:
+            return "A crawl is already running. Stop it before starting another."
+        if plan.mode == "osint":
+            self.mode_var.set("osint")
+            self._toggle_mode()
+            self.osint_keyword_var.set(plan.keyword)
+            self.dork_var.set(plan.dork_type or "general")
+            self.log_queue.put(f"INFO: AI chat search: {plan.keyword}")
+            self.start_scraping()
+        elif plan.mode == "custom":
+            self.mode_var.set("custom")
+            self._toggle_mode()
+            self.url_text.delete("1.0", END)
+            self.url_text.insert("1.0", plan.url)
+            if plan.keyword:
+                self.keyword_var.set(plan.keyword)
+            self.smart_var.set(True)
+            self.log_queue.put(f"INFO: AI chat scrape: {plan.url}")
+            self.start_scraping()
+        elif plan.mode == "watchdog":
+            self.db.add_watch_item(plan.url, plan.keyword, plan.target_price, plan.watch_mode or "keyword")
+            self._refresh_watchlist()
+            self.log_queue.put(plan.message)
+        return plan.message
 
     def export_report(self):
         if not self._all_results_cache:

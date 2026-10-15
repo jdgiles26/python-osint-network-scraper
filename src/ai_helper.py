@@ -61,6 +61,43 @@ def _require_client(capability: str) -> bool:
         return False
     return True
 
+# gemini-pro and gemini-pro-vision no longer answer. These ids still do.
+GEMINI_TEXT_MODELS = (
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
+)
+
+
+def _generate_with_models(content):
+    """Try each current Gemini model. The first text answer wins."""
+    if genai is None:
+        return None, get_last_error() or "Gemini client unavailable."
+    last_error = "No Gemini model answered."
+    for name in GEMINI_TEXT_MODELS:
+        try:
+            model = genai.GenerativeModel(name)
+            response = model.generate_content(content)
+            text = getattr(response, "text", "") or ""
+            if str(text).strip():
+                return str(text), None
+            last_error = f"{name} returned an empty answer."
+        except Exception as exc:
+            last_error = f"{name}: {exc}"
+    return None, last_error
+
+
+def generate_text(prompt, api_key=None):
+    """Free-form answer for the results chat. Selector helpers stay separate."""
+    if not prompt or not str(prompt).strip():
+        return None, "A prompt is required."
+    if not configure_api(api_key):
+        return None, get_last_error()
+    if not _require_client("text"):
+        return None, get_last_error()
+    return _generate_with_models(prompt)
+
+
 def _clean_selector(raw):
     """Normalize LLM output to a single CSS selector line."""
     if not raw:
@@ -99,7 +136,7 @@ def configure_api(api_key=None):
 
 def generate_selector_from_image(html_content, image_path, description):
     """
-    Uses the Gemini Pro Vision model to generate a CSS selector.
+    Uses a current Gemini model to generate a CSS selector from a screenshot.
     """
     if not html_content or not image_path:
         return None, "HTML content or image path is missing."
@@ -107,10 +144,9 @@ def generate_selector_from_image(html_content, image_path, description):
         return None, get_last_error()
 
     try:
-        model = genai.GenerativeModel('gemini-pro-vision')
         image = Image.open(image_path)
     except Exception as e:
-        return None, f"Failed to initialize AI model or open image: {e}"
+        return None, f"Failed to open image: {e}"
 
     # Truncate HTML to stay within token limits
     if len(html_content) > 250000:
@@ -132,28 +168,23 @@ def generate_selector_from_image(html_content, image_path, description):
         image
     ]
 
-    try:
-        response = model.generate_content(prompt)
-        selector = _clean_selector(response.text)
-        if not _is_valid_selector(selector):
-            return None, f"AI failed to produce a valid selector. Response: {selector}"
-        return selector, None
-    except Exception as e:
-        return None, f"An error occurred with the Vision API: {e}"
+    raw, err = _generate_with_models(prompt)
+    if err or not raw:
+        return None, err or "An error occurred with the Vision API."
+    selector = _clean_selector(raw)
+    if not _is_valid_selector(selector):
+        return None, f"AI failed to produce a valid selector. Response: {selector}"
+    return selector, None
 
 def generate_css_selector(html_content, description):
     """
-    Uses the Gemini Pro (text) model to generate a CSS selector.
+    Uses a current Gemini model to generate a CSS selector.
     """
     # This is the text-only fallback
     if not html_content or not description:
         return None, "HTML content or description is missing."
     if not _require_client("text"):
         return None, get_last_error()
-    try:
-        model = genai.GenerativeModel('gemini-pro')
-    except Exception:
-        return None, "Failed to initialize AI model. Is the API key configured?"
 
     if len(html_content) > 150000:
         html_content = html_content[:150000]
@@ -164,11 +195,10 @@ def generate_css_selector(html_content, description):
     HTML:
     {html_content}
     """
-    try:
-        response = model.generate_content(prompt)
-        selector = _clean_selector(response.text)
-        if not _is_valid_selector(selector):
-            return None, f"AI returned an invalid or descriptive response: '{selector}'"
-        return selector, None
-    except Exception as e:
-        return None, f"An error occurred with the AI API: {e}"
+    raw, err = _generate_with_models(prompt)
+    if err or not raw:
+        return None, err or "An error occurred with the AI API."
+    selector = _clean_selector(raw)
+    if not _is_valid_selector(selector):
+        return None, f"AI returned an invalid or descriptive response: '{selector}'"
+    return selector, None
